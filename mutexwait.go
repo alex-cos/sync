@@ -28,6 +28,11 @@ func (m *MutexWait) IsLocked() bool {
 	return m.locked.Load()
 }
 
+func (m *MutexWait) LockInfinite() {
+	m.mu.Lock()
+	m.locked.Store(true)
+}
+
 func (m *MutexWait) Lock(timeout time.Duration) bool {
 	if timeout <= 0 {
 		return m.TryLock()

@@ -9,6 +9,7 @@ import (
 type LockerWait interface {
 	TryLock() bool
 	IsLocked() bool
+	LockInfinite()
 	Lock(timeout time.Duration) bool
 	LockContext(ctx context.Context) bool
 	Unlock()
