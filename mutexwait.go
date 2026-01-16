@@ -2,71 +2,74 @@ package sync
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// A MutexWait is a mutual exclusion lock with wait timeout mechanism.
-// The zero value for a Mutex is an unlocked mutex.
-//
-// A MutexWait must not be copied after first use.
-type MutexWait struct {
-	state uint32
-}
-
-// A LockerWait represents an object that can be locked and unlocked.
-type LockerWait interface {
-	Lock(d time.Duration) bool
-	LockContext(ctx context.Context) bool
-	Unlock()
-	IsLocked() bool
-}
-
 const (
-	mutexUnlocked = 0
-	mutexLocked   = 1
-	sleepTime     = time.Millisecond
+	sleepTime = time.Millisecond
 )
 
-func (thiz *MutexWait) Lock(d time.Duration) bool {
-	timeout := time.After(d)
-	for {
-		select {
-		case <-timeout:
-			return false
-		default:
-			if thiz.tryOrWait() {
-				return true
-			}
-		}
-	}
+type MutexWait struct {
+	mu     sync.Mutex
+	locked atomic.Bool
 }
 
-func (thiz *MutexWait) LockContext(ctx context.Context) bool {
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-			if thiz.tryOrWait() {
-				return true
-			}
-		}
-	}
-}
-
-func (thiz *MutexWait) tryOrWait() bool {
-	if atomic.CompareAndSwapUint32(&thiz.state, 0, mutexLocked) {
+func (m *MutexWait) TryLock() bool {
+	if m.mu.TryLock() {
+		m.locked.Store(true)
 		return true
 	}
-	time.Sleep(sleepTime)
 	return false
 }
 
-func (thiz *MutexWait) Unlock() {
-	atomic.StoreUint32(&thiz.state, mutexUnlocked)
+func (m *MutexWait) IsLocked() bool {
+	return m.locked.Load()
 }
 
-func (thiz *MutexWait) IsLocked() bool {
-	return atomic.LoadUint32(&thiz.state) > 0
+func (m *MutexWait) Lock(timeout time.Duration) bool {
+	if timeout <= 0 {
+		return m.TryLock()
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(sleepTime)
+	defer ticker.Stop()
+
+	for {
+		if m.TryLock() {
+			return true
+		}
+
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *MutexWait) LockContext(ctx context.Context) bool {
+	ticker := time.NewTicker(sleepTime)
+	defer ticker.Stop()
+
+	for {
+		if m.TryLock() {
+			return true
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *MutexWait) Unlock() {
+	m.locked.Store(false)
+	m.mu.Unlock()
 }

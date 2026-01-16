@@ -10,7 +10,7 @@ import (
 )
 
 func HammerMutex(muw *sync.MutexWait, loops int, cdone chan bool) {
-	for i := 0; i < loops; i++ {
+	for range loops {
 		locked := muw.Lock(5 * time.Microsecond)
 		if !locked {
 			break
@@ -27,10 +27,10 @@ func HammerMutex(muw *sync.MutexWait, loops int, cdone chan bool) {
 }
 
 func HammerMutexContext(muw *sync.MutexWait, loops int, cdone chan bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Microsecond)
-	defer cancel()
-	for i := 0; i < loops; i++ {
+	for range loops {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Microsecond)
 		locked := muw.LockContext(ctx)
+		cancel()
 		if !locked {
 			break
 		}
@@ -47,12 +47,14 @@ func HammerMutexContext(muw *sync.MutexWait, loops int, cdone chan bool) {
 
 func TestMutex(t *testing.T) {
 	t.Parallel()
+
 	muw := new(sync.MutexWait)
+
 	c := make(chan bool)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go HammerMutex(muw, 1000, c)
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		b := <-c
 		if !b {
 			t.Fatal()
@@ -63,13 +65,14 @@ func TestMutex(t *testing.T) {
 
 func TestMutexContext(t *testing.T) {
 	t.Parallel()
+
 	muw := new(sync.MutexWait)
 
 	c := make(chan bool)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go HammerMutexContext(muw, 1000, c)
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		b := <-c
 		if !b {
 			t.Fatal()
