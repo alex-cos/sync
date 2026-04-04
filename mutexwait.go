@@ -75,6 +75,8 @@ func (m *MutexWait) LockContext(ctx context.Context) bool {
 }
 
 func (m *MutexWait) Unlock() {
-	m.locked.Store(false)
+	if !m.locked.CompareAndSwap(true, false) {
+		return
+	}
 	m.mu.Unlock()
 }

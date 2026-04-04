@@ -2,6 +2,8 @@ package sync_test
 
 import (
 	"context"
+	stdsync "sync"
+	"sync/atomic"
 	"time"
 
 	"testing"
@@ -9,40 +11,38 @@ import (
 	"github.com/alex-cos/sync"
 )
 
-func HammerMutex(muw *sync.MutexWait, loops int, cdone chan bool) {
+func HammerMutex(muw *sync.MutexWait, loops int, failed *atomic.Bool) {
 	for range loops {
-		locked := muw.Lock(5 * time.Microsecond)
+		locked := muw.Lock(50 * time.Millisecond)
 		if !locked {
 			break
 		}
-		defer muw.Unlock()
 		locked = muw.IsLocked()
 		if !locked {
-			cdone <- false
+			failed.Store(true)
 			return
 		}
 		time.Sleep(10 * time.Microsecond)
+		muw.Unlock()
 	}
-	cdone <- true
 }
 
-func HammerMutexContext(muw *sync.MutexWait, loops int, cdone chan bool) {
+func HammerMutexContext(muw *sync.MutexWait, loops int, failed *atomic.Bool) {
 	for range loops {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Microsecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		locked := muw.LockContext(ctx)
 		cancel()
 		if !locked {
 			break
 		}
-		defer muw.Unlock()
 		locked = muw.IsLocked()
 		if !locked {
-			cdone <- false
+			failed.Store(true)
 			return
 		}
 		time.Sleep(10 * time.Microsecond)
+		muw.Unlock()
 	}
-	cdone <- true
 }
 
 func TestMutex(t *testing.T) {
@@ -50,17 +50,21 @@ func TestMutex(t *testing.T) {
 
 	muw := new(sync.MutexWait)
 
-	c := make(chan bool)
+	var wg stdsync.WaitGroup
+	var failed atomic.Bool
+
 	for range 10 {
-		go HammerMutex(muw, 1000, c)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			HammerMutex(muw, 1000, &failed)
+		}()
 	}
-	for range 10 {
-		b := <-c
-		if !b {
-			t.Fatal()
-		}
+	wg.Wait()
+
+	if failed.Load() {
+		t.Fatal("mutex hammer test failed")
 	}
-	close(c)
 }
 
 func TestMutexContext(t *testing.T) {
@@ -68,15 +72,96 @@ func TestMutexContext(t *testing.T) {
 
 	muw := new(sync.MutexWait)
 
-	c := make(chan bool)
+	var wg stdsync.WaitGroup
+	var failed atomic.Bool
+
 	for range 10 {
-		go HammerMutexContext(muw, 1000, c)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			HammerMutexContext(muw, 1000, &failed)
+		}()
 	}
-	for range 10 {
-		b := <-c
-		if !b {
-			t.Fatal()
+	wg.Wait()
+
+	if failed.Load() {
+		t.Fatal("mutex context hammer test failed")
+	}
+}
+
+func TestDoubleUnlock(t *testing.T) {
+	t.Parallel()
+
+	muw := new(sync.MutexWait)
+
+	muw.LockInfinite()
+	muw.Unlock()
+	muw.Unlock()
+
+	if muw.IsLocked() {
+		t.Fatal("mutex should not be locked after double unlock")
+	}
+}
+
+func TestContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	muw := new(sync.MutexWait)
+	muw.LockInfinite()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan bool)
+	go func() {
+		result := muw.LockContext(ctx)
+		done <- result
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case result := <-done:
+		if result {
+			t.Fatal("LockContext should return false when context is cancelled")
 		}
+	case <-time.After(time.Second):
+		t.Fatal("LockContext did not return after context cancellation")
 	}
-	close(c)
+
+	muw.Unlock()
+}
+
+func TestTimeoutZero(t *testing.T) {
+	t.Parallel()
+
+	muw := new(sync.MutexWait)
+
+	result := muw.Lock(0)
+	if !result {
+		t.Fatal("Lock(0) should succeed on unlocked mutex")
+	}
+	if !muw.IsLocked() {
+		t.Fatal("mutex should be locked")
+	}
+
+	result = muw.Lock(0)
+	if result {
+		t.Fatal("Lock(0) should fail on already locked mutex")
+	}
+
+	muw.Unlock()
+}
+
+func TestNegativeTimeout(t *testing.T) {
+	t.Parallel()
+
+	muw := new(sync.MutexWait)
+
+	result := muw.Lock(-1)
+	if !result {
+		t.Fatal("Lock(-1) should behave like TryLock and succeed on unlocked mutex")
+	}
+
+	muw.Unlock()
 }
